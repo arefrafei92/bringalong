@@ -19,18 +19,28 @@ function settings(b:Record<string,unknown>){const permission=b.memberPermission?
 async function assignment(db:DB,gid:string,value:unknown){const assignee=value?str(value):null;if(assignee&&assignee!=='everyone')await membership(db,gid,assignee);return assignee;}
 function failure(e:unknown){if(e instanceof InputError)return Response.json({error:e.message},{status:e.status});console.error('Planner request failed',e);return Response.json({error:'Could not save or load your gathering. Please try again.'},{status:503})}
 export async function GET(r:Request){try{
- const me=identity(r),db=database(),gid=new URL(r.url).searchParams.get('group');
+ const identityInfo=identity(r),db=database(),gid=new URL(r.url).searchParams.get('group');
+ const profile=await db.prepare('SELECT avatar_text AS avatarText,color FROM avatar_profiles WHERE user_id=?').bind(identityInfo.id).first();
+ const me={...identityInfo,...(profile||{})};
  // Never serialize password hashes, including in the group overview.
  const groups=(await db.prepare(`SELECT g.id,g.name,g.occasion,g.date,g.location,g.code,g.created_at,${ownerSQL} AS ownerId,g.member_permission AS memberPermission,g.visibility,(SELECT COUNT(*) FROM members WHERE group_id=g.id) AS memberCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id) AS itemCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id AND assignee IS NOT NULL) AS assignedCount FROM gatherings g JOIN members m ON g.id=m.group_id WHERE m.user_id=? ORDER BY g.created_at DESC`).bind(me.id).all()).results;
  if(!gid)return Response.json({me,groups},{headers:{'Cache-Control':'no-store'}});
  await membership(db,gid,me.id);
- const [memberRows,itemRows,packingRows]=await Promise.all([db.prepare('SELECT user_id AS id,name FROM members WHERE group_id=? ORDER BY name').bind(gid).all(),db.prepare('SELECT * FROM items WHERE group_id=? ORDER BY created_at,id').bind(gid).all(),db.prepare('SELECT p.item_id,p.user_id FROM item_packing p JOIN items i ON i.id=p.item_id JOIN members m ON m.group_id=i.group_id AND m.user_id=p.user_id WHERE i.group_id=?').bind(gid).all()]);
+ const [memberRows,itemRows,packingRows]=await Promise.all([db.prepare('SELECT m.user_id AS id,m.name,p.avatar_text AS avatarText,p.color FROM members m LEFT JOIN avatar_profiles p ON p.user_id=m.user_id WHERE m.group_id=? ORDER BY m.rowid').bind(gid).all(),db.prepare('SELECT * FROM items WHERE group_id=? ORDER BY created_at,id').bind(gid).all(),db.prepare('SELECT p.item_id,p.user_id FROM item_packing p JOIN items i ON i.id=p.item_id JOIN members m ON m.group_id=i.group_id AND m.user_id=p.user_id WHERE i.group_id=?').bind(gid).all()]);
  const items=itemRows.results.map((i:any)=>{const packedBy=packingRows.results.filter((p:any)=>p.item_id===i.id).map((p:any)=>p.user_id);return {...i,packedBy,myPacked:packedBy.includes(me.id),packed:i.assignee==='everyone'?(packedBy.length===memberRows.results.length?1:0):i.packed};});
  return Response.json({me,groups,members:memberRows.results,items},{headers:{'Cache-Control':'no-store'}});
 }catch(e){return failure(e)}}
 export async function POST(r:Request){try{
  if(r.headers.get('origin')&&r.headers.get('origin')!==new URL(r.url).origin)throw new InputError('Invalid request origin.',403);
  const me=identity(r),db=database(),b=await r.json();
+ if(b.action==='profile'){
+  const avatarText=typeof b.avatarText==='string'?b.avatarText.trim():'';
+  const segments=[...new Intl.Segmenter('en',{granularity:'grapheme'}).segment(avatarText)];
+  if(!avatarText||avatarText.length>40||segments.length>3||/[\p{Cc}\p{Zl}\p{Zp}]/u.test(avatarText))throw new InputError('Choose one emoji or up to three text characters.');
+  if(typeof b.color!=='string'||!/^#[0-9a-f]{6}$/i.test(b.color))throw new InputError('Choose a valid icon color.');
+  await db.prepare('INSERT INTO avatar_profiles (user_id,avatar_text,color) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET avatar_text=excluded.avatar_text,color=excluded.color').bind(me.id,avatarText,b.color.toLowerCase()).run();
+  return Response.json({ok:true});
+ }
  if(b.action==='create'){
   const name=str(b.name),occasion=str(b.occasion);if(!name||!Object.hasOwn(templates,occasion))throw new InputError('Choose a name and occasion.');
   const {permission,visibility}=settings(b),passwordHash=visibility==='protected'?await hashPassword(passwordInput(b.password)):null;

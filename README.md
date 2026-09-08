@@ -10,6 +10,8 @@ A responsive shared gathering planner for camping, parties, BBQs, and potlucks.
 - Public groups can be joined with an invite; protected groups require a password. Passwords use salted PBKDF2 hashes and failed joins are limited per user/group.
 - Existing groups keep their first member as admin. Only admins may change group settings.
 - Dashboard filters and per-person packing counts.
+- Custom member icons (emoji or short text plus a color), saved across groups. Members without custom icons receive distinct default colors within a group.
+- Mobile item rows keep the claim action on its own row with a 44px touch target.
 - Occasion templates and shared updates every 15 seconds.
 
 Built with React/Vinext and Cloudflare D1. Identity comes from the Sites authenticated-user headers; group membership is enforced on every group API operation. An invite code grants membership to an authenticated visitor who already has site access; protected groups also require the group password. Public group access does not change the site-level access policy. The initial publication is owner-private; sharing access is required before friends can use invitations.

@@ -5,3 +5,5 @@ export const items = sqliteTable('items',{id:text('id').primaryKey(),groupId:tex
 
 export const itemPacking = sqliteTable('item_packing',{itemId:text('item_id').notNull().references(()=>items.id,{onDelete:'cascade'}),userId:text('user_id').notNull()},t=>[primaryKey({columns:[t.itemId,t.userId]})]);
 export const joinAttempts = sqliteTable('join_attempts',{groupId:text('group_id').notNull().references(()=>gatherings.id,{onDelete:'cascade'}),userId:text('user_id').notNull(),attempts:integer('attempts').notNull().default(0),windowStart:integer('window_start').notNull()},t=>[primaryKey({columns:[t.groupId,t.userId]})]);
+
+export const avatarProfiles = sqliteTable('avatar_profiles',{userId:text('user_id').primaryKey(),avatarText:text('avatar_text').notNull(),color:text('color').notNull()});

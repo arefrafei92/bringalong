@@ -101,3 +101,21 @@ test('existing groups retain their original first member as admin',async()=>{
  assert.equal((await post('first',{action:'editGroup',groupId:'legacy',name:'Owned',memberPermission:'assign'})).status,200);
  assert.equal(sqlite.prepare('SELECT owner_id FROM gatherings WHERE id=?').get('legacy').owner_id,'first');
 });
+
+test('member icons persist across groups and only the signed-in profile changes',async()=>{
+ const {data:{id:gid}}=await post('icon-owner',{action:'create',name:'Icon group',occasion:'Custom'});
+ const code=(await get('icon-owner',gid)).data.groups.find(g=>g.id===gid).code;
+ await post('icon-friend',{action:'join',code});
+ assert.equal((await post(null,{action:'profile',avatarText:'X',color:'#123456'})).status,401);
+ assert.equal((await post('icon-owner',{action:'profile',avatarText:'TOOLONG',color:'#123456'})).status,400);
+ assert.equal((await post('icon-owner',{action:'profile',avatarText:'AR',color:'red'})).status,400);
+ assert.equal((await post('icon-owner',{action:'profile',avatarText:'👨‍👩‍👧‍👦',color:'#ABCDEF',userId:'icon-friend'})).status,200);
+ let view=(await get('icon-friend',gid)).data;
+ assert.equal(view.members.find(m=>m.id==='icon-owner').avatarText,'👨‍👩‍👧‍👦');assert.equal(view.members.find(m=>m.id==='icon-owner').color,'#abcdef');
+ assert.equal(view.members.find(m=>m.id==='icon-friend').avatarText,null);
+ assert.equal((await get('icon-owner')).data.me.color,'#abcdef');
+ assert.equal((await post('icon-owner',{action:'profile',avatarText:'AR',color:'#2563eb'})).status,200);
+ const {data:{id:second}}=await post('icon-owner',{action:'create',name:'Other group',occasion:'Custom'});
+ assert.equal((await get('icon-owner',second)).data.members[0].avatarText,'AR');
+ assert.equal((await get('icon-owner',gid)).data.members.find(m=>m.id==='icon-owner').avatarText,'AR');
+});

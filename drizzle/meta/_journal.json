@@ -15,6 +15,13 @@
       "when": 1788871776929,
       "tag": "0001_dizzy_iron_lad",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788872171939,
+      "tag": "0002_slim_skreet",
+      "breakpoints": true
     }
   ]
 }
