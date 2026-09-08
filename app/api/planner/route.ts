@@ -1,13 +1,13 @@
 import { database } from '@/db/raw';
 import { templates } from '@/lib/templates';
 type DB = ReturnType<typeof database>;
-type GroupAccess = {id:string;owner_id:string;member_permission:string;visibility:string;password_hash:string|null};
+type GroupAccess = {id:string;owner_id:string;member_permission:string;visibility:string;password_hash:string|null;remove_at:number|null};
 class InputError extends Error { constructor(message:string,public status=400){super(message)} }
 function identity(r:Request){const id=r.headers.get('oai-authenticated-user-id');if(!id)throw new InputError('Please sign in to use your planner.',401);let name=r.headers.get('oai-authenticated-user-full-name')||r.headers.get('oai-authenticated-user-email')?.split('@')[0]||'You';if(r.headers.get('oai-authenticated-user-full-name-encoding')==='percent-encoded-utf-8')try{name=decodeURIComponent(name)}catch{}return {id,name};}
 function str(v:unknown,max=120){if(typeof v!=='string')throw new InputError('Please check the form.');return v.trim().slice(0,max)}
 const ownerSQL = "COALESCE(g.owner_id,(SELECT user_id FROM members WHERE group_id=g.id ORDER BY rowid LIMIT 1))";
 async function membership(db:DB,gid:string,uid:string){if(!await db.prepare('SELECT 1 FROM members WHERE group_id=? AND user_id=?').bind(gid,uid).first())throw new InputError('This gathering is not available to you.',403)}
-async function access(db:DB,gid:string,uid:string){await membership(db,gid,uid);const group=await db.prepare(`SELECT g.id,${ownerSQL} AS owner_id,g.member_permission,g.visibility,g.password_hash FROM gatherings g WHERE g.id=?`).bind(gid).first<GroupAccess>();if(!group)throw new InputError('Gathering not found.',404);return group;}
+async function access(db:DB,gid:string,uid:string){await membership(db,gid,uid);const group=await db.prepare(`SELECT g.id,${ownerSQL} AS owner_id,g.member_permission,g.visibility,g.password_hash,g.remove_at FROM gatherings g WHERE g.id=?`).bind(gid).first<GroupAccess>();if(!group)throw new InputError('Gathering not found.',404);return group;}
 function requireEditor(group:GroupAccess,uid:string){if(group.owner_id!==uid&&group.member_permission!=='edit')throw new InputError('Only the admin can add, edit, or remove items. You can still update assignments and packing status.',403)}
 function requireAdmin(group:GroupAccess,uid:string){if(group.owner_id!==uid)throw new InputError('Only the group admin can change these settings.',403)}
 function passwordInput(v:unknown){if(typeof v!=='string'||v.length<8||v.length>128)throw new InputError('Use a password between 8 and 128 characters.');return v;}
@@ -17,6 +17,13 @@ async function hashPassword(password:string){const salt=hex(crypto.getRandomValu
 async function verifyPassword(password:string,stored:string){const [salt,expected]=stored.split(':');if(!salt||!expected)return false;const actual=await derive(password,salt);let diff=actual.length^expected.length;for(let i=0;i<actual.length;i++)diff|=actual.charCodeAt(i)^(expected.charCodeAt(i)||0);return diff===0;}
 function settings(b:Record<string,unknown>){const permission=b.memberPermission??'edit',visibility=b.visibility??'public';if(!['edit','assign'].includes(String(permission))||!['public','protected'].includes(String(visibility)))throw new InputError('Choose valid group settings.');return {permission,visibility};}
 async function assignment(db:DB,gid:string,value:unknown){const assignee=value?str(value):null;if(assignee&&assignee!=='everyone')await membership(db,gid,assignee);return assignee;}
+function removalDate(value:unknown,previous:number|null=null){
+ if(value===undefined)return previous;
+ if(value===null)return null;
+ if(typeof value!=='number'||!Number.isSafeInteger(value)||value<=Date.now()||value>Date.now()+10*366*86400000)throw new InputError('Choose a future removal date within the next 10 years.');
+ return value;
+}
+async function removeExpired(db:DB){await db.prepare('DELETE FROM gatherings WHERE remove_at IS NOT NULL AND remove_at<=?').bind(Date.now()).run();}
 function failure(e:unknown){if(e instanceof InputError)return Response.json({error:e.message},{status:e.status});console.error('Planner request failed',e);return Response.json({error:'Could not save or load your gathering. Please try again.'},{status:503})}
 // All application writes and their trigger-generated history share one transaction.
 function audited(raw:DB,me:{id:string;name:string}):DB {
@@ -39,13 +46,14 @@ async function activity(r:Request,db:DB,me:{id:string},gid:string|null){
 }
 export async function GET(r:Request){try{
  const identityInfo=identity(r),db=database(),gid=new URL(r.url).searchParams.get('group');
+ await removeExpired(db);
  await firstUse(db,identityInfo);
  if(new URL(r.url).searchParams.has('activity'))return await activity(r,db,identityInfo,gid);
  await audited(db,identityInfo).prepare('UPDATE members SET name=? WHERE user_id=? AND name IS NOT ?').bind(identityInfo.name,identityInfo.id,identityInfo.name).run();
  const profile=await db.prepare('SELECT avatar_text AS avatarText,color FROM avatar_profiles WHERE user_id=?').bind(identityInfo.id).first();
  const me={...identityInfo,...(profile||{})};
  // Never serialize password hashes, including in the group overview.
- const groups=(await db.prepare(`SELECT g.id,g.name,g.occasion,g.date,g.location,g.code,g.created_at,${ownerSQL} AS ownerId,g.member_permission AS memberPermission,g.visibility,(SELECT COUNT(*) FROM members WHERE group_id=g.id) AS memberCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id) AS itemCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id AND assignee IS NOT NULL) AS assignedCount FROM gatherings g JOIN members m ON g.id=m.group_id WHERE m.user_id=? ORDER BY g.created_at DESC`).bind(me.id).all()).results;
+ const groups=(await db.prepare(`SELECT g.id,g.name,g.occasion,g.date,g.location,g.code,g.created_at,${ownerSQL} AS ownerId,g.member_permission AS memberPermission,g.visibility,g.remove_at AS removeAt,(SELECT COUNT(*) FROM members WHERE group_id=g.id) AS memberCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id) AS itemCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id AND assignee IS NOT NULL) AS assignedCount FROM gatherings g JOIN members m ON g.id=m.group_id WHERE m.user_id=? ORDER BY g.created_at DESC`).bind(me.id).all()).results;
  if(!gid)return Response.json({me,groups},{headers:{'Cache-Control':'no-store'}});
  await membership(db,gid,me.id);
  const [memberRows,itemRows,packingRows]=await Promise.all([db.prepare('SELECT m.user_id AS id,m.name,p.avatar_text AS avatarText,p.color FROM members m LEFT JOIN avatar_profiles p ON p.user_id=m.user_id WHERE m.group_id=? ORDER BY m.rowid').bind(gid).all(),db.prepare('SELECT * FROM items WHERE group_id=? ORDER BY created_at,id').bind(gid).all(),db.prepare('SELECT p.item_id,p.user_id FROM item_packing p JOIN items i ON i.id=p.item_id JOIN members m ON m.group_id=i.group_id AND m.user_id=p.user_id WHERE i.group_id=?').bind(gid).all()]);
@@ -55,7 +63,9 @@ export async function GET(r:Request){try{
 export async function POST(r:Request){try{
  if(r.headers.get('origin')&&r.headers.get('origin')!==new URL(r.url).origin)throw new InputError('Invalid request origin.',403);
  const me=identity(r),db=audited(database(),me),b=await r.json();
+ await removeExpired(database());
  await firstUse(db,me);
+ if(['create','editGroup'].includes(b.action)&&b.removeEnabled===true&&b.removeAt==null)throw new InputError('Choose a future removal date.');
  if(b.action==='profile'){
   const avatarText=typeof b.avatarText==='string'?b.avatarText.trim():'';
   const segments=[...new Intl.Segmenter('en',{granularity:'grapheme'}).segment(avatarText)];
@@ -67,8 +77,9 @@ export async function POST(r:Request){try{
  if(b.action==='create'){
   const name=str(b.name),occasion=str(b.occasion);if(!name||!Object.hasOwn(templates,occasion))throw new InputError('Choose a name and occasion.');
   const {permission,visibility}=settings(b),passwordHash=visibility==='protected'?await hashPassword(passwordInput(b.password)):null;
+  const removeAt=removalDate(b.removeAt);
   const id=crypto.randomUUID(),code=crypto.randomUUID().replaceAll('-','').slice(0,12).toUpperCase(),seed=b.prefill?templates[occasion]:[];
-  await db.batch([db.prepare('INSERT INTO gatherings (id,name,occasion,date,location,code,created_at,owner_id,member_permission,visibility,password_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)').bind(id,name,occasion,str(b.date||''),str(b.location||''),code,Date.now(),me.id,permission,visibility,passwordHash),db.prepare('INSERT INTO members (group_id,user_id,name) VALUES (?,?,?)').bind(id,me.id,me.name),...seed.map((i,n)=>db.prepare('INSERT INTO items (id,group_id,name,quantity,unit,category,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(),id,i.name,i.quantity,i.unit,i.category,Date.now()+n))]);return Response.json({id});
+  await db.batch([db.prepare('INSERT INTO gatherings (id,name,occasion,date,location,code,created_at,owner_id,member_permission,visibility,password_hash,remove_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,name,occasion,str(b.date||''),str(b.location||''),code,Date.now(),me.id,permission,visibility,passwordHash,removeAt),db.prepare('INSERT INTO members (group_id,user_id,name) VALUES (?,?,?)').bind(id,me.id,me.name),...seed.map((i,n)=>db.prepare('INSERT INTO items (id,group_id,name,quantity,unit,category,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(),id,i.name,i.quantity,i.unit,i.category,Date.now()+n))]);return Response.json({id});
  }
  if(b.action==='join'){
   const code=str(b.code).toUpperCase().replaceAll(' ','');const group=await db.prepare('SELECT id,visibility,password_hash FROM gatherings WHERE code=?').bind(code).first<GroupAccess>();if(!group)throw new InputError('No gathering found. Double-check your invite code.',404);
@@ -104,6 +115,6 @@ export async function POST(r:Request){try{
  }else if(b.action==='editGroup'){
   requireAdmin(group,me.id);const name=str(b.name);if(!name)throw new InputError('Give your gathering a name.');const {permission,visibility}=settings(b);let passwordHash=group.password_hash;
   if(visibility==='public')passwordHash=null;else if(b.password)passwordHash=await hashPassword(passwordInput(b.password));else if(!passwordHash)throw new InputError('Set a password for this protected group.');
-  await db.prepare('UPDATE gatherings SET name=?,date=?,location=?,owner_id=?,member_permission=?,visibility=?,password_hash=? WHERE id=?').bind(name,str(b.date||''),str(b.location||''),group.owner_id,permission,visibility,passwordHash,gid).run();
+  await db.prepare('UPDATE gatherings SET name=?,date=?,location=?,owner_id=?,member_permission=?,visibility=?,password_hash=?,remove_at=? WHERE id=?').bind(name,str(b.date||''),str(b.location||''),group.owner_id,permission,visibility,passwordHash,removalDate(b.removeAt,group.remove_at),gid).run();
  }else throw new InputError('Unknown action.');return Response.json({ok:true});
 }catch(e){return failure(e)}}

@@ -167,3 +167,27 @@ test('a failed activity insert rolls back the associated item mutation',async()=
  try{assert.equal((await post('rollback-user',{action:'saveItem',groupId:gid,name:'Must roll back',quantity:1,unit:'each',category:'Other'})).status,503)}finally{console.error=prior;sqlite.exec('DROP TRIGGER fail_activity')}
  assert.equal((await get('rollback-user',gid)).data.items.length,0);assert.equal(sqlite.prepare('SELECT count(*) AS n FROM activity_context').get().n,0);
 });
+
+test('automatic removal is opt-in, admin-controlled, cancellable, and cascades on expiry',async()=>{
+ const owner='expiry-owner',friend='expiry-friend';
+ const {data:{id:gid}}=await post(owner,{action:'create',name:'Temporary camp',occasion:'Custom'});
+ let v=(await get(owner,gid)).data;assert.equal(v.groups.find(g=>g.id===gid).removeAt,null);const code=v.groups.find(g=>g.id===gid).code;
+ await post(friend,{action:'join',code});
+ assert.equal((await post(owner,{action:'editGroup',groupId:gid,name:'Temporary camp',removeEnabled:true,removeAt:null})).status,400);
+ assert.equal((await post(owner,{action:'editGroup',groupId:gid,name:'Temporary camp',removeAt:Date.now()-1})).status,400);
+ const removeAt=Date.now()+86400000;
+ assert.equal((await post(friend,{action:'editGroup',groupId:gid,name:'Temporary camp',removeAt})).status,403);
+ await post(owner,{action:'editGroup',groupId:gid,name:'Temporary camp',removeAt});
+ assert.equal((await get(owner,gid)).data.groups.find(g=>g.id===gid).removeAt,removeAt);
+ await post(owner,{action:'editGroup',groupId:gid,name:'Temporary camp',removeAt:null});
+ assert.equal((await get(owner,gid)).data.groups.find(g=>g.id===gid).removeAt,null);
+ await post(owner,{action:'saveItem',groupId:gid,name:'Cup',quantity:1,unit:'each',category:'Other',assignee:'everyone'});
+ const id=(await get(owner,gid)).data.items[0].id;
+ await post(owner,{action:'packed',groupId:gid,id,packed:true});
+ sqlite.prepare('UPDATE gatherings SET remove_at=? WHERE id=?').run(Date.now()-1000,gid);
+ assert.equal((await get(owner,gid)).status,403);
+ for(const [table,col,val] of [['gatherings','id',gid],['items','group_id',gid],['members','group_id',gid],['activity_events','group_id',gid],['item_packing','item_id',id]])assert.equal(sqlite.prepare(`SELECT count(*) AS n FROM ${table} WHERE ${col}=?`).get(val).n,0);
+ assert.equal((await post(friend,{action:'join',code})).status,404);
+ for(const user of [owner,friend])assert.equal((await history(user)).data.events.filter(e=>e.action==='group.remove'&&e.subject==='Temporary camp').length,1);
+ await get(owner);assert.equal((await history(owner)).data.events.filter(e=>e.action==='group.remove').length,1);
+});
