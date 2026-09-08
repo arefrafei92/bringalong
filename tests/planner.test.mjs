@@ -38,5 +38,66 @@ test('shared gathering lifecycle, membership isolation, and quantity validation'
  await post('bob',{action:'deleteItem',groupId:gid,id});a=await get('alice',gid);assert.equal(a.data.items.length,8);
  assert.equal((await post('alice',edited)).status,409);
  await post('alice',{action:'template',groupId:gid,occasion:'Party'});a=await get('bob',gid);assert.equal(a.data.items.length,14);
- await post('bob',{action:'editGroup',groupId:gid,name:'Friends camping',date:'2026-10-01',location:'Turkey Point'});a=await get('alice',gid);assert.equal(a.data.groups[0].name,'Friends camping');
+ assert.equal((await post('bob',{action:'editGroup',groupId:gid,name:'Blocked',date:'',location:''})).status,403);await post('alice',{action:'editGroup',groupId:gid,name:'Friends camping',date:'2026-10-01',location:'Turkey Point'});a=await get('alice',gid);assert.equal(a.data.groups[0].name,'Friends camping');
+});
+
+
+test('everyone assignment tracks each member and includes future joiners',async()=>{
+ const {data:{id:gid}}=await post('owner',{action:'create',name:'Everyone trip',occasion:'Custom'});
+ const code=(await get('owner',gid)).data.groups.find(g=>g.id===gid).code;
+ await post('friend',{action:'join',code});
+ await post('owner',{action:'saveItem',groupId:gid,name:'Water',quantity:2,unit:'L',category:'Drinks',assignee:'everyone'});
+ let view=(await get('owner',gid)).data;const id=view.items[0].id;
+ assert.equal(view.items[0].assignee,'everyone');assert.equal(view.items[0].packed,0);
+ await post('owner',{action:'packed',groupId:gid,id,packed:true});
+ view=(await get('owner',gid)).data;assert.equal(view.items[0].myPacked,true);assert.equal(view.items[0].packed,0);assert.deepEqual(view.items[0].packedBy,['owner']);
+ assert.equal((await get('friend',gid)).data.items[0].myPacked,false);
+ await post('friend',{action:'packed',groupId:gid,id,packed:true});assert.equal((await get('owner',gid)).data.items[0].packed,1);
+ await post('late',{action:'join',code});assert.equal((await get('owner',gid)).data.items[0].packed,0);
+ await post('owner',{action:'assign',groupId:gid,id,assignee:'owner'});
+ view=(await get('owner',gid)).data;assert.deepEqual(view.items[0].packedBy,[]);assert.equal(view.items[0].packed,0);
+});
+
+test('admin-only editing is enforced for all mutation paths',async()=>{
+ const {data:{id:gid}}=await post('admin',{action:'create',name:'Restricted',occasion:'Camping',prefill:true,memberPermission:'assign'});
+ let view=(await get('admin',gid)).data;const code=view.groups.find(g=>g.id===gid).code,id=view.items[0].id;
+ await post('member',{action:'join',code});
+ for(const body of [{action:'saveItem',name:'Sneak',quantity:1,unit:'each',category:'Other'},{action:'saveItem',id,name:'Sneak edit',quantity:1,unit:'each',category:'Other'},{action:'deleteItem',id},{action:'template',occasion:'Party'},{action:'editGroup',name:'Sneak settings',memberPermission:'edit'}])assert.equal((await post('member',{...body,groupId:gid})).status,403);
+ assert.equal((await post('member',{action:'assign',groupId:gid,id,assignee:'everyone'})).status,200);
+ assert.equal((await post('member',{action:'packed',groupId:gid,id,packed:true})).status,200);
+ assert.equal((await get('admin',gid)).data.items.find(i=>i.id===id).name,view.items.find(i=>i.id===id).name);
+ await post('admin',{action:'editGroup',groupId:gid,name:'Open editing',memberPermission:'edit',visibility:'public'});
+ assert.equal((await post('member',{action:'saveItem',groupId:gid,name:'Allowed',quantity:1,unit:'each',category:'Other'})).status,200);
+});
+
+test('password protection, hashing, rate limiting, and public access',async()=>{
+ assert.equal((await post('host',{action:'create',name:'Weak',occasion:'Custom',visibility:'protected',password:'short'})).status,400);
+ const {data:{id:gid}}=await post('host',{action:'create',name:'Private party',occasion:'Party',visibility:'protected',password:'secretpass12'});
+ let view=(await get('host',gid)).data;const group=view.groups.find(g=>g.id===gid),code=group.code;
+ assert.equal(group.visibility,'protected');assert.equal(group.ownerId,'host');assert.equal(JSON.stringify(view).includes('password_hash'),false);assert.equal(JSON.stringify(view).includes('secretpass12'),false);
+ const hash=sqlite.prepare('SELECT password_hash FROM gatherings WHERE id=?').get(gid).password_hash;assert.notEqual(hash,'secretpass12');assert.ok(hash.includes(':'));
+ assert.equal((await post('guest',{action:'join',code})).status,403);assert.equal((await get('guest',gid)).status,403);
+ assert.equal((await post('guest',{action:'join',code,password:'wrong'})).status,403);
+ assert.equal((await post('guest',{action:'join',code,password:'secretpass12'})).status,200);
+ for(let n=0;n<5;n++)assert.equal((await post('attacker',{action:'join',code,password:'wrong'})).status,403);
+ assert.equal((await post('attacker',{action:'join',code,password:'secretpass12'})).status,429);
+ assert.equal((await post('host',{action:'editGroup',groupId:gid,name:'Same password',visibility:'protected',password:''})).status,200);
+ assert.equal(sqlite.prepare('SELECT password_hash FROM gatherings WHERE id=?').get(gid).password_hash,hash);
+ await post('host',{action:'editGroup',groupId:gid,name:'New password',visibility:'protected',password:'newsecret123'});
+ assert.equal((await post('newguest',{action:'join',code,password:'secretpass12'})).status,403);
+ assert.equal((await post('newguest',{action:'join',code,password:'newsecret123'})).status,200);
+ assert.equal((await post('guest',{action:'join',code})).status,200);
+ await post('host',{action:'editGroup',groupId:gid,name:'Now public',visibility:'public'});
+ assert.equal(sqlite.prepare('SELECT password_hash FROM gatherings WHERE id=?').get(gid).password_hash,null);
+ assert.equal((await post('publicguest',{action:'join',code})).status,200);
+});
+
+test('existing groups retain their original first member as admin',async()=>{
+ sqlite.prepare('INSERT INTO gatherings (id,name,occasion,code,created_at) VALUES (?,?,?,?,?)').run('legacy','Legacy','Custom','LEGACY',1);
+ sqlite.prepare('INSERT INTO members (group_id,user_id,name) VALUES (?,?,?)').run('legacy','first','First');
+ sqlite.prepare('INSERT INTO members (group_id,user_id,name) VALUES (?,?,?)').run('legacy','second','Second');
+ assert.equal((await get('first','legacy')).data.groups.find(g=>g.id==='legacy').ownerId,'first');
+ assert.equal((await post('second',{action:'editGroup',groupId:'legacy',name:'No'})).status,403);
+ assert.equal((await post('first',{action:'editGroup',groupId:'legacy',name:'Owned',memberPermission:'assign'})).status,200);
+ assert.equal(sqlite.prepare('SELECT owner_id FROM gatherings WHERE id=?').get('legacy').owner_id,'first');
 });

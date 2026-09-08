@@ -5,10 +5,14 @@ A responsive shared gathering planner for camping, parties, BBQs, and potlucks.
 - Create gatherings and join with an invite code.
 - Add, edit, remove, and assign items, with quantities, units, categories, and notes.
 - Claim unassigned items and mark assigned items packed.
+- Assign an item to Everyone: quantities are per person, and packing is tracked separately for each member (including future joiners).
+- Group creators are admins. Admins choose full member editing or assignment-and-packing-only access.
+- Public groups can be joined with an invite; protected groups require a password. Passwords use salted PBKDF2 hashes and failed joins are limited per user/group.
+- Existing groups keep their first member as admin. Only admins may change group settings.
 - Dashboard filters and per-person packing counts.
 - Occasion templates and shared updates every 15 seconds.
 
-Built with React/Vinext and Cloudflare D1. Identity comes from the Sites authenticated-user headers; group membership is enforced on every group API operation. An invite code grants group membership to an authenticated visitor who already has site access. The initial publication is owner-private; sharing access is required before friends can use invitations.
+Built with React/Vinext and Cloudflare D1. Identity comes from the Sites authenticated-user headers; group membership is enforced on every group API operation. An invite code grants membership to an authenticated visitor who already has site access; protected groups also require the group password. Public group access does not change the site-level access policy. The initial publication is owner-private; sharing access is required before friends can use invitations.
 
 ## Development
 
