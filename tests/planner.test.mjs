@@ -119,3 +119,51 @@ test('member icons persist across groups and only the signed-in profile changes'
  assert.equal((await get('icon-owner',second)).data.members[0].avatarText,'AR');
  assert.equal((await get('icon-owner',gid)).data.members.find(m=>m.id==='icon-owner').avatarText,'AR');
 });
+
+async function history(user,group,before){const base=request(user);const params=new URLSearchParams({activity:'1'});if(group)params.set('group',group);if(before)params.set('before',before);const r=await api.GET(new Request(base.url+'?'+params,{headers:base.headers}));return {status:r.status,data:await r.json()}}
+test('activity captures exact mutations, preserves deletion history, and isolates memberships',async()=>{
+ const user='audit-owner';const {data:{id:gid}}=await post(user,{action:'create',name:'Audit camp',occasion:'Custom',visibility:'protected',password:'never-log-this'});
+ let view=(await get(user,gid)).data;
+ await post('audit-friend',{action:'join',code:view.groups.find(g=>g.id===gid).code,password:'never-log-this'});
+ await post('audit-friend',{action:'join',code:view.groups.find(g=>g.id===gid).code});
+ await post(user,{action:'saveItem',groupId:gid,name:'Water',quantity:2,unit:'L',category:'Drinks'});
+ let id=(await get(user,gid)).data.items[0].id;
+ await post('audit-friend',{action:'claim',groupId:gid,id});
+ const afterClaim=(await history(user,gid)).data.events.length;
+ await post(user,{action:'claim',groupId:gid,id});assert.equal((await history(user,gid)).data.events.length,afterClaim);
+ await post(user,{action:'packed',groupId:gid,id,packed:true});
+ const afterCheck=(await history(user,gid)).data.events.length;
+ await post(user,{action:'packed',groupId:gid,id,packed:true});assert.equal((await history(user,gid)).data.events.length,afterCheck);
+ await post('audit-friend',{action:'packed',groupId:gid,id,packed:false});
+ await post(user,{action:'editGroup',groupId:gid,name:'Renamed camp',visibility:'protected',password:'another-secret',memberPermission:'assign'});
+ const beforeDenied=(await history(user,gid)).data.events.length;
+ assert.equal((await post('audit-friend',{action:'deleteItem',groupId:gid,id})).status,403);
+ assert.equal((await history(user,gid)).data.events.length,beforeDenied);
+ await post(user,{action:'deleteItem',groupId:gid,id});
+ const h=await history(user,gid);assert.equal(h.status,200);
+ assert.equal(h.data.events.filter(e=>e.action==='member.join'&&e.actorId==='audit-friend').length,1);
+ const deleted=h.data.events.find(e=>e.action==='item.delete');assert.equal(deleted.subject,'Water');assert.equal(deleted.details.before.assignedTo,'audit-friend');
+ const renamed=h.data.events.find(e=>e.action==='group.update');assert.equal(renamed.details.before.name,'Audit camp');assert.equal(renamed.details.after.name,'Renamed camp');assert.equal(renamed.details.passwordChanged,1);
+ assert.ok(!JSON.stringify(h.data).includes('never-log-this'));assert.ok(!JSON.stringify(h.data).includes('another-secret'));assert.ok(!JSON.stringify(h.data).includes('password_hash'));
+ assert.equal((await history('outsider',gid)).status,403);assert.ok(!(await history('outsider')).data.events.some(e=>e.groupId===gid));
+ await get(user);await get(user);assert.equal((await history(user)).data.events.filter(e=>e.action==='account.start').length,1);
+ assert.equal(sqlite.prepare('SELECT count(*) AS n FROM activity_context').get().n,0);
+});
+test('Everyone packing history and pagination remain complete',async()=>{
+ const user='pagination-owner';const {data:{id:gid}}=await post(user,{action:'create',name:'History',occasion:'Custom'});
+ await post(user,{action:'saveItem',groupId:gid,name:'Cup',quantity:1,unit:'each',category:'Other',assignee:'everyone'});
+ const id=(await get(user,gid)).data.items[0].id;
+ for(let n=0;n<44;n++)await post(user,{action:'packed',groupId:gid,id,packed:n%2===0});
+ const first=(await history(user,gid)).data;assert.equal(first.events.length,40);assert.ok(first.nextCursor);
+ const second=(await history(user,gid,first.nextCursor)).data;assert.equal(second.nextCursor,null);assert.equal(new Set([...first.events,...second.events].map(e=>e.id)).size,47);
+ assert.equal([...first.events,...second.events].filter(e=>e.action==='packing.check').length,22);
+ assert.equal([...first.events,...second.events].filter(e=>e.action==='packing.uncheck').length,22);
+ assert.equal((await history(user,gid,'-1')).status,400);
+});
+test('a failed activity insert rolls back the associated item mutation',async()=>{
+ const {data:{id:gid}}=await post('rollback-user',{action:'create',name:'Rollback',occasion:'Custom'});
+ sqlite.exec("CREATE TRIGGER fail_activity BEFORE INSERT ON activity_events WHEN NEW.action='item.create' BEGIN SELECT RAISE(ABORT,'test audit failure'); END;");
+ const prior=console.error;console.error=()=>{};
+ try{assert.equal((await post('rollback-user',{action:'saveItem',groupId:gid,name:'Must roll back',quantity:1,unit:'each',category:'Other'})).status,503)}finally{console.error=prior;sqlite.exec('DROP TRIGGER fail_activity')}
+ assert.equal((await get('rollback-user',gid)).data.items.length,0);assert.equal(sqlite.prepare('SELECT count(*) AS n FROM activity_context').get().n,0);
+});

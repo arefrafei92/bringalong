@@ -18,8 +18,30 @@ async function verifyPassword(password:string,stored:string){const [salt,expecte
 function settings(b:Record<string,unknown>){const permission=b.memberPermission??'edit',visibility=b.visibility??'public';if(!['edit','assign'].includes(String(permission))||!['public','protected'].includes(String(visibility)))throw new InputError('Choose valid group settings.');return {permission,visibility};}
 async function assignment(db:DB,gid:string,value:unknown){const assignee=value?str(value):null;if(assignee&&assignee!=='everyone')await membership(db,gid,assignee);return assignee;}
 function failure(e:unknown){if(e instanceof InputError)return Response.json({error:e.message},{status:e.status});console.error('Planner request failed',e);return Response.json({error:'Could not save or load your gathering. Please try again.'},{status:503})}
+// All application writes and their trigger-generated history share one transaction.
+function audited(raw:DB,me:{id:string;name:string}):DB {
+ const batch=async(statements:any[])=>{
+  const results=await raw.batch([raw.prepare('INSERT INTO activity_context (id,actor_id,actor_name,created_at) VALUES (1,?,?,?) ON CONFLICT(id) DO UPDATE SET actor_id=excluded.actor_id,actor_name=excluded.actor_name,created_at=excluded.created_at').bind(me.id,me.name,Date.now()),...statements.map(s=>s._raw||s),raw.prepare('DELETE FROM activity_context WHERE id=1')]);
+  return results.slice(1,-1);
+ };
+ const wrap=(statement:any):any=>({_raw:statement,bind:(...values:any[])=>wrap(statement.bind(...values)),first:(...args:any[])=>statement.first(...args),all:()=>statement.all(),run:async()=> (await batch([statement]))[0]});
+ return {prepare:(sql:string)=>wrap(raw.prepare(sql)),batch} as DB;
+}
+async function firstUse(db:DB,me:{id:string;name:string}) {
+ await db.prepare("INSERT OR IGNORE INTO activity_events (event_key,actor_id,actor_name,action,subject,created_at) VALUES (?,?,?,'account.start','Bringalong',?)").bind('account:'+me.id,me.id,me.name,Date.now()).run();
+}
+async function activity(r:Request,db:DB,me:{id:string},gid:string|null){
+ if(gid)await membership(db,gid,me.id);
+ const cursor=new URL(r.url).searchParams.get('before');
+ if(cursor&&!/^[1-9][0-9]{0,14}$/.test(cursor))throw new InputError('Invalid history page.');
+ const rows=(await db.prepare(`SELECT e.id,e.group_id AS groupId,g.name AS groupName,e.actor_id AS actorId,e.actor_name AS actorName,p.avatar_text AS avatarText,p.color,e.action,e.subject,e.details,e.created_at AS createdAt FROM activity_events e LEFT JOIN gatherings g ON g.id=e.group_id LEFT JOIN avatar_profiles p ON p.user_id=e.actor_id WHERE (e.group_id IN (SELECT group_id FROM members WHERE user_id=?) OR (e.group_id IS NULL AND e.actor_id=?)) AND (? IS NULL OR e.group_id=?) AND e.id<? ORDER BY e.id DESC LIMIT 41`).bind(me.id,me.id,gid,gid,cursor?Number(cursor):Number.MAX_SAFE_INTEGER).all()).results as any[];
+ return Response.json({events:rows.slice(0,40).map(e=>({...e,details:JSON.parse(e.details)})),nextCursor:rows.length>40?String(rows[39].id):null},{headers:{'Cache-Control':'no-store'}});
+}
 export async function GET(r:Request){try{
  const identityInfo=identity(r),db=database(),gid=new URL(r.url).searchParams.get('group');
+ await firstUse(db,identityInfo);
+ if(new URL(r.url).searchParams.has('activity'))return await activity(r,db,identityInfo,gid);
+ await audited(db,identityInfo).prepare('UPDATE members SET name=? WHERE user_id=? AND name IS NOT ?').bind(identityInfo.name,identityInfo.id,identityInfo.name).run();
  const profile=await db.prepare('SELECT avatar_text AS avatarText,color FROM avatar_profiles WHERE user_id=?').bind(identityInfo.id).first();
  const me={...identityInfo,...(profile||{})};
  // Never serialize password hashes, including in the group overview.
@@ -32,7 +54,8 @@ export async function GET(r:Request){try{
 }catch(e){return failure(e)}}
 export async function POST(r:Request){try{
  if(r.headers.get('origin')&&r.headers.get('origin')!==new URL(r.url).origin)throw new InputError('Invalid request origin.',403);
- const me=identity(r),db=database(),b=await r.json();
+ const me=identity(r),db=audited(database(),me),b=await r.json();
+ await firstUse(db,me);
  if(b.action==='profile'){
   const avatarText=typeof b.avatarText==='string'?b.avatarText.trim():'';
   const segments=[...new Intl.Segmenter('en',{granularity:'grapheme'}).segment(avatarText)];

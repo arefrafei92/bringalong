@@ -29,3 +29,10 @@ The application code is MIT licensed; third-party packages retain their own lice
 Requested deployment target: a public GitHub repository for source and Cloudflare Workers + D1 on the free plan, with a free `workers.dev` hostname. GitHub Pages alone cannot run this app's API or shared database.
 
 Standalone Cloudflare deployment is not configured yet. This version uses Sites-provided authenticated identity, so that integration must be adapted before a direct Cloudflare release. Do not expose this app directly and trust user-supplied `oai-authenticated-*` headers. The production D1 database identifier and CI credentials must come from the target Cloudflare account; no credentials are included in this source.
+
+
+### Activity history
+
+The Activity page shows the signed-in person's gathering activity and personal first-use/profile events. Each gathering also has an Activity tab. Events retain actor names, timestamps, and safe before/after snapshots, including deleted items, assignments, and individual Everyone packing changes. Templates log every item added. Group members can see their shared group's history; profile changes appear in existing groups and personal history. History starts when this feature is deployed; first use means first observed use of Bringalong, not creation of the external login account. Merely viewing a list is not logged. Password values, hashes, and invite codes are never stored in activity details.
+
+SQLite triggers in migration 0003 capture successful row changes. The API sets and clears the acting user inside the same D1 batch transaction as each write, so history and changes commit or roll back together. Keep future mutations inside this audited wrapper and add triggers for future entities. Direct database maintenance without this context is not attributed as user activity. Activity is read-only in the app and uses ID-based pagination (40 events per page).

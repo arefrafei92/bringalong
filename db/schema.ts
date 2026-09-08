@@ -7,3 +7,7 @@ export const itemPacking = sqliteTable('item_packing',{itemId:text('item_id').no
 export const joinAttempts = sqliteTable('join_attempts',{groupId:text('group_id').notNull().references(()=>gatherings.id,{onDelete:'cascade'}),userId:text('user_id').notNull(),attempts:integer('attempts').notNull().default(0),windowStart:integer('window_start').notNull()},t=>[primaryKey({columns:[t.groupId,t.userId]})]);
 
 export const avatarProfiles = sqliteTable('avatar_profiles',{userId:text('user_id').primaryKey(),avatarText:text('avatar_text').notNull(),color:text('color').notNull()});
+
+export const activityEvents = sqliteTable('activity_events',{id:integer('id').primaryKey({autoIncrement:true}),eventKey:text('event_key').unique(),groupId:text('group_id'),actorId:text('actor_id').notNull(),actorName:text('actor_name').notNull(),action:text('action').notNull(),subject:text('subject').notNull(),details:text('details').notNull().default('{}'),createdAt:integer('created_at').notNull()},t=>[index('idx_activity_group').on(t.groupId,t.id),index('idx_activity_actor').on(t.actorId,t.id)]);
+// Set and cleared inside the same transaction as each write; triggers capture exact changes.
+export const activityContext = sqliteTable('activity_context',{id:integer('id').primaryKey(),actorId:text('actor_id').notNull(),actorName:text('actor_name').notNull(),createdAt:integer('created_at').notNull()});
