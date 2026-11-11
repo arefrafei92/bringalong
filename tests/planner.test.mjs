@@ -58,11 +58,25 @@ test('everyone assignment tracks each member and includes future joiners',async(
  view=(await get('owner',gid)).data;assert.deepEqual(view.items[0].packedBy,[]);assert.equal(view.items[0].packed,0);
 });
 
+test('admin can reset assignee and packing while keeping the item',async()=>{
+ const {data:{id:gid}}=await post('reset-owner',{action:'create',name:'Reset trip',occasion:'Custom'});
+ const code=(await get('reset-owner',gid)).data.groups.find(g=>g.id===gid).code;
+ await post('reset-friend',{action:'join',code});
+ await post('reset-owner',{action:'saveItem',groupId:gid,name:'Cooler',quantity:1,unit:'each',category:'Equipment',assignee:'everyone'});
+ const id=(await get('reset-owner',gid)).data.items[0].id;
+ await post('reset-owner',{action:'packed',groupId:gid,id,packed:true});
+ await post('reset-friend',{action:'packed',groupId:gid,id,packed:true});
+ assert.equal((await post('reset-friend',{action:'resetItem',groupId:gid,id})).status,403);
+ assert.equal((await post('reset-owner',{action:'resetItem',groupId:gid,id})).status,200);
+ const item=(await get('reset-owner',gid)).data.items.find(i=>i.id===id);
+ assert.ok(item);assert.equal(item.name,'Cooler');assert.equal(item.assignee,null);assert.equal(item.packed,0);assert.deepEqual(item.packedBy,[]);
+});
+
 test('admin-only editing is enforced for all mutation paths',async()=>{
  const {data:{id:gid}}=await post('admin',{action:'create',name:'Restricted',occasion:'Camping',prefill:true,memberPermission:'assign'});
  let view=(await get('admin',gid)).data;const code=view.groups.find(g=>g.id===gid).code,id=view.items[0].id;
  await post('member',{action:'join',code});
- for(const body of [{action:'saveItem',name:'Sneak',quantity:1,unit:'each',category:'Other'},{action:'saveItem',id,name:'Sneak edit',quantity:1,unit:'each',category:'Other'},{action:'deleteItem',id},{action:'template',occasion:'Party'},{action:'editGroup',name:'Sneak settings',memberPermission:'edit'}])assert.equal((await post('member',{...body,groupId:gid})).status,403);
+ for(const body of [{action:'saveItem',name:'Sneak',quantity:1,unit:'each',category:'Other'},{action:'saveItem',id,name:'Sneak edit',quantity:1,unit:'each',category:'Other'},{action:'deleteItem',id},{action:'resetItem',id},{action:'template',occasion:'Party'},{action:'editGroup',name:'Sneak settings',memberPermission:'edit'}])assert.equal((await post('member',{...body,groupId:gid})).status,403);
  assert.equal((await post('member',{action:'assign',groupId:gid,id,assignee:'everyone'})).status,200);
  assert.equal((await post('member',{action:'packed',groupId:gid,id,packed:true})).status,200);
  assert.equal((await get('admin',gid)).data.items.find(i=>i.id===id).name,view.items.find(i=>i.id===id).name);
