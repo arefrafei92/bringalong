@@ -236,6 +236,7 @@ html.dark .form label{color:#c5d5cc}
 html.dark .form input,html.dark .picker{background:#121a17;border-color:#364943;color:#e7eeea}
 html.dark .form input:focus{border-color:#3f9a7c;box-shadow:0 0 0 3px #3f9a7c22}
 html.dark .form input::placeholder{color:#6f8178}
+.invite-password-field{display:flex;align-items:center;gap:6px;margin:8px 0 0;width:100%}.invite-password-field svg{flex-shrink:0;opacity:.75;color:#6b7871}.invite-password-field input{flex:1;min-height:32px;padding:4px 8px;border:1px solid #d5ddd8;border-radius:6px;background:white;font-size:12px;font-weight:550;color:#40554a}html.dark .invite-password-field svg{color:#8f9c95}html.dark .invite-password-field input{background:#101a17;border-color:#364943;color:#d7e2dc}.invite-password{display:inline-flex;align-items:center;gap:5px;margin:8px 0 0;font-size:11px;font-weight:550;color:#6b7871;letter-spacing:.02em}.invite-password svg{opacity:.75;flex-shrink:0}.invite-password.missing{font-weight:500;color:#9a6b4a}html.dark .invite-password{color:#8f9c95}html.dark .invite-password.missing{color:#c4a07a}
 html.dark .invite-code{background:#15201c;border-color:#364943}
 html.dark .invite-code>span{color:#8fa098}
 html.dark .invite-code strong{color:#7dba9d}

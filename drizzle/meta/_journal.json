@@ -50,6 +50,13 @@
       "when": 1794378000000,
       "tag": "0006_member_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794379000000,
+      "tag": "0007_invite_password",
+      "breakpoints": true
     }
   ]
 }
