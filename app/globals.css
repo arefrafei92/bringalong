@@ -216,6 +216,9 @@ html.dark .item-row{border-bottom-color:#24352f}
 html.dark .item-name strong{color:var(--foreground)}html.dark .item-name .item-qty{color:#9aaba3}html.dark .item-name .item-meta{color:#8fa098}
 html.dark .item-name>span,html.dark .is-packed .item-name strong{color:#8fa098}
 html.dark .pack-status{background:#1b2622;border-color:#33443c;color:#9aaba3}html.dark .pack-status.is-on{background:#1f3229;border-color:#3d5a48;color:#b7d4c2}
+html.dark .activity-heading p,html.dark .activity-scope,html.dark .activity-meta,html.dark .activity-empty{color:#9aaba3}
+html.dark .activity-timeline>li:not(:last-child):before{background:#2d3f38}
+html.dark .activity-changes{background:#15201c;border-color:#2d3f38;color:#c5d5cc}
 html.dark .assignee{color:#9aaba3}
 html.dark .assignee-qty{color:#9bb0a4}
 html.dark .claim{background:#2a221b;border-color:#6b4a2e;color:#e0a57a}
