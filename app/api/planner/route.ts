@@ -160,6 +160,12 @@ export async function POST(r:Request){try{
    db.prepare('UPDATE items SET assignee=NULL,packed=0 WHERE id=? AND group_id=?').bind(id,gid),
    db.prepare('DELETE FROM item_packing WHERE item_id=?').bind(id),
   ]);
+ }else if(b.action==='resetItems'){
+  requireAdmin(group,me.id);
+  await db.batch([
+   db.prepare('UPDATE items SET assignee=NULL,packed=0 WHERE group_id=?').bind(gid),
+   db.prepare('DELETE FROM item_packing WHERE item_id IN (SELECT id FROM items WHERE group_id=?)').bind(gid),
+  ]);
  }else if(b.action==='packed'){
   const id=str(b.id),item=await db.prepare('SELECT assignee FROM items WHERE id=? AND group_id=?').bind(id,gid).first<{assignee:string|null}>();if(!item)throw new InputError('This item was removed. Refresh your list.',409);
   if(item.assignee==='everyone'){if(b.packed)await db.prepare('INSERT OR IGNORE INTO item_packing (item_id,user_id) VALUES (?,?)').bind(id,me.id).run();else await db.prepare('DELETE FROM item_packing WHERE item_id=? AND user_id=?').bind(id,me.id).run();}
