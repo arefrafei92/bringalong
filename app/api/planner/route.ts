@@ -16,7 +16,29 @@ async function derive(password:string,salt:string){const key=await crypto.subtle
 async function hashPassword(password:string){const salt=hex(crypto.getRandomValues(new Uint8Array(16)));return salt+':'+await derive(password,salt);}
 async function verifyPassword(password:string,stored:string){const [salt,expected]=stored.split(':');if(!salt||!expected)return false;const actual=await derive(password,salt);let diff=actual.length^expected.length;for(let i=0;i<actual.length;i++)diff|=actual.charCodeAt(i)^(expected.charCodeAt(i)||0);return diff===0;}
 function settings(b:Record<string,unknown>){const permission=b.memberPermission??'edit',visibility=b.visibility??'public';if(!['edit','assign'].includes(String(permission))||!['public','protected'].includes(String(visibility)))throw new InputError('Choose valid group settings.');return {permission,visibility};}
+const graphemeSegmenter=new Intl.Segmenter('en',{granularity:'grapheme'});
 async function assignment(db:DB,gid:string,value:unknown){const assignee=value?str(value):null;if(assignee&&assignee!=='everyone')await membership(db,gid,assignee);return assignee;}
+type ClaimItem={id:string;name:string;quantity:number;unit:string;category:string;note:string;assignee:string|null};
+async function releaseQuantity(db:DB,gid:string,item:ClaimItem,qty:number,exceptId:string){
+ const sibling=await db.prepare('SELECT id,quantity FROM items WHERE group_id=? AND name=? AND unit=? AND category=? AND assignee IS NULL AND id!=? LIMIT 1').bind(gid,item.name,item.unit,item.category,exceptId).first<{id:string;quantity:number}>();
+ if(sibling)await db.prepare('UPDATE items SET quantity=? WHERE id=?').bind(Number((sibling.quantity+qty).toFixed(4)),sibling.id).run();
+ else await db.prepare('INSERT INTO items (id,group_id,name,quantity,unit,category,assignee,note,created_at) VALUES (?,?,?,?,?,?,NULL,?,?)').bind(crypto.randomUUID(),gid,item.name,qty,item.unit,item.category,item.note||'',Date.now()).run();
+}
+async function releaseClaim(db:DB,gid:string,item:ClaimItem,uid:string){
+ const sibling=await db.prepare('SELECT id,quantity FROM items WHERE group_id=? AND name=? AND unit=? AND category=? AND assignee IS NULL AND id!=? LIMIT 1').bind(gid,item.name,item.unit,item.category,item.id).first<{id:string;quantity:number}>();
+ if(sibling){
+  await db.batch([
+   db.prepare('UPDATE items SET quantity=? WHERE id=?').bind(Number((sibling.quantity+item.quantity).toFixed(4)),sibling.id),
+   db.prepare('DELETE FROM item_packing WHERE item_id=?').bind(item.id),
+   db.prepare('DELETE FROM items WHERE id=? AND group_id=? AND assignee=?').bind(item.id,gid,uid),
+  ]);
+ }else{
+  await db.batch([
+   db.prepare('UPDATE items SET assignee=NULL,packed=0 WHERE id=? AND group_id=? AND assignee=?').bind(item.id,gid,uid),
+   db.prepare('DELETE FROM item_packing WHERE item_id=?').bind(item.id),
+  ]);
+ }
+}
 function removalDate(value:unknown,previous:number|null=null){
  if(value===undefined)return previous;
  if(value===null)return null;
@@ -68,7 +90,7 @@ export async function POST(r:Request){try{
  if(['create','editGroup'].includes(b.action)&&b.removeEnabled===true&&b.removeAt==null)throw new InputError('Choose a future removal date.');
  if(b.action==='profile'){
   const avatarText=typeof b.avatarText==='string'?b.avatarText.trim():'';
-  const segments=[...new Intl.Segmenter('en',{granularity:'grapheme'}).segment(avatarText)];
+  const segments=[...graphemeSegmenter.segment(avatarText)];
   if(!avatarText||avatarText.length>40||segments.length>3||/[\p{Cc}\p{Zl}\p{Zp}]/u.test(avatarText))throw new InputError('Choose one emoji or up to three text characters.');
   if(typeof b.color!=='string'||!/^#[0-9a-f]{6}$/i.test(b.color))throw new InputError('Choose a valid icon color.');
   await db.prepare('INSERT INTO avatar_profiles (user_id,avatar_text,color) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET avatar_text=excluded.avatar_text,color=excluded.color').bind(me.id,avatarText,b.color.toLowerCase()).run();
@@ -110,11 +132,58 @@ export async function POST(r:Request){try{
   const id=str(b.id),item=await db.prepare('SELECT assignee FROM items WHERE id=? AND group_id=?').bind(id,gid).first<{assignee:string|null}>();if(!item)throw new InputError('This item was removed. Refresh your list.',409);
   if(item.assignee==='everyone'){if(b.packed)await db.prepare('INSERT OR IGNORE INTO item_packing (item_id,user_id) VALUES (?,?)').bind(id,me.id).run();else await db.prepare('DELETE FROM item_packing WHERE item_id=? AND user_id=?').bind(id,me.id).run();}
   else await db.prepare('UPDATE items SET packed=? WHERE id=? AND group_id=? AND assignee IS NOT NULL').bind(b.packed?1:0,id,gid).run();
- }else if(b.action==='claim')await db.prepare('UPDATE items SET assignee=? WHERE id=? AND group_id=? AND assignee IS NULL').bind(me.id,str(b.id),gid).run();
+ }else if(b.action==='claim'){
+  const id=str(b.id);
+  const item=await db.prepare('SELECT id,name,quantity,unit,category,note,assignee FROM items WHERE id=? AND group_id=?').bind(id,gid).first<{id:string;name:string;quantity:number;unit:string;category:string;note:string;assignee:string|null}>();
+  if(!item)throw new InputError('This item was removed. Refresh your list.',409);
+  if(item.assignee)throw new InputError('Someone already claimed this item.',409);
+  let qty=Number(b.quantity);
+  if(!Number.isFinite(qty)||qty<=0)qty=item.quantity;
+  if(qty>item.quantity)qty=item.quantity;
+  if(qty>=item.quantity){
+   const claimed=await db.prepare('UPDATE items SET assignee=? WHERE id=? AND group_id=? AND assignee IS NULL').bind(me.id,id,gid).run();
+   if(!claimed?.meta?.changes)throw new InputError('Someone already claimed this item.',409);
+  }else{
+   const remaining=Number((item.quantity-qty).toFixed(4));
+   const claimed=await db.prepare('UPDATE items SET quantity=?,assignee=? WHERE id=? AND group_id=? AND assignee IS NULL').bind(qty,me.id,id,gid).run();
+   if(!claimed?.meta?.changes)throw new InputError('Someone already claimed this item.',409);
+   await releaseQuantity(db,gid,item,remaining,id);
+  }
+ }else if(b.action==='updateClaim'){
+  const id=str(b.id);
+  const item=await db.prepare('SELECT id,name,quantity,unit,category,note,assignee FROM items WHERE id=? AND group_id=?').bind(id,gid).first<{id:string;name:string;quantity:number;unit:string;category:string;note:string;assignee:string|null}>();
+  if(!item)throw new InputError('This item was removed. Refresh your list.',409);
+  if(item.assignee!==me.id)throw new InputError('You can only update items you’re bringing.',403);
+  if(b.unassign){
+   await releaseClaim(db,gid,item,me.id);
+  }else{
+   let qty=Number(b.quantity);
+   if(!Number.isFinite(qty)||qty<=0)throw new InputError('Enter how many you’ll bring.');
+   if(qty>item.quantity)throw new InputError('You can only reduce how many you’re bringing.');
+   if(qty<item.quantity){
+    const remaining=Number((item.quantity-qty).toFixed(4));
+    const updated=await db.prepare('UPDATE items SET quantity=? WHERE id=? AND group_id=? AND assignee=?').bind(qty,id,gid,me.id).run();
+    if(!updated?.meta?.changes)throw new InputError('This item was removed. Refresh your list.',409);
+    await releaseQuantity(db,gid,item,remaining,id);
+   }
+  }
+ }
  else if(b.action==='template'){requireEditor(group,me.id);const occasion=str(b.occasion);if(!Object.hasOwn(templates,occasion)||!templates[occasion].length)throw new InputError('Choose an occasion template.');await db.batch(templates[occasion].map((i,n)=>db.prepare('INSERT INTO items (id,group_id,name,quantity,unit,category,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(),gid,i.name,i.quantity,i.unit,i.category,Date.now()+n)));
  }else if(b.action==='editGroup'){
   requireAdmin(group,me.id);const name=str(b.name);if(!name)throw new InputError('Give your gathering a name.');const {permission,visibility}=settings(b);let passwordHash=group.password_hash;
   if(visibility==='public')passwordHash=null;else if(b.password)passwordHash=await hashPassword(passwordInput(b.password));else if(!passwordHash)throw new InputError('Set a password for this protected group.');
   await db.prepare('UPDATE gatherings SET name=?,date=?,location=?,owner_id=?,member_permission=?,visibility=?,password_hash=?,remove_at=? WHERE id=?').bind(name,str(b.date||''),str(b.location||''),group.owner_id,permission,visibility,passwordHash,removalDate(b.removeAt,group.remove_at),gid).run();
+ }else if(b.action==='leave'){
+  if(group.owner_id===me.id)throw new InputError('Admins can’t leave. Delete the gathering instead.',403);
+  await db.batch([
+   db.prepare('UPDATE items SET assignee=NULL,packed=0 WHERE group_id=? AND assignee=?').bind(gid,me.id),
+   db.prepare('DELETE FROM item_packing WHERE user_id=? AND item_id IN (SELECT id FROM items WHERE group_id=?)').bind(me.id,gid),
+   db.prepare('DELETE FROM members WHERE group_id=? AND user_id=?').bind(gid,me.id),
+  ]);
+  return Response.json({ok:true,home:true});
+ }else if(b.action==='deleteGroup'){
+  requireAdmin(group,me.id);
+  await db.prepare('DELETE FROM gatherings WHERE id=?').bind(gid).run();
+  return Response.json({ok:true,home:true});
  }else throw new InputError('Unknown action.');return Response.json({ok:true});
 }catch(e){return failure(e)}}

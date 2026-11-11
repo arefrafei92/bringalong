@@ -1,0 +1,31 @@
+{
+  "$schema": "https://react.doctor/schema.json",
+  "ignore": {
+    "overrides": [
+      {
+        "files": ["components/ui/**"],
+        "rules": ["react-doctor/only-export-components"]
+      },
+      {
+        "files": ["components/ui/carousel.tsx"],
+        "rules": [
+          "react-doctor/no-pass-data-to-parent",
+          "react-doctor/no-pass-live-state-to-parent",
+          "react-doctor/no-prop-callback-in-effect"
+        ]
+      },
+      {
+        "files": ["components/ui/chart.tsx"],
+        "rules": ["react-doctor/prefer-dynamic-import"]
+      },
+      {
+        "files": ["app/activity-feed.tsx"],
+        "rules": ["react-doctor/no-fetch-in-effect"]
+      },
+      {
+        "files": ["app/chatgpt-auth.ts"],
+        "rules": ["react-doctor/clickjacking-redirect-risk"]
+      }
+    ]
+  }
+}
