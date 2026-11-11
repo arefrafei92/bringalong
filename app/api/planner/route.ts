@@ -73,7 +73,9 @@ export async function GET(r:Request){try{
  if(new URL(r.url).searchParams.has('activity'))return await activity(r,db,identityInfo,gid);
  await audited(db,identityInfo).prepare('UPDATE members SET name=? WHERE user_id=? AND name IS NOT ?').bind(identityInfo.name,identityInfo.id,identityInfo.name).run();
  const profile=await db.prepare('SELECT avatar_text AS avatarText,color FROM avatar_profiles WHERE user_id=?').bind(identityInfo.id).first();
- const me={...identityInfo,...(profile||{})};
+ const account=await db.prepare('SELECT email,password_hash AS passwordHash FROM users WHERE id=?').bind(identityInfo.id).first<{email:string;passwordHash:string}>();
+ const isGuest=!!account&&(account.passwordHash==='guest'||/@bringalong\.guest$/i.test(account.email));
+ const me={...identityInfo,...(profile||{}),isGuest,email:isGuest?undefined:account?.email};
  // Never serialize password hashes, including in the group overview.
  const groups=(await db.prepare(`SELECT g.id,g.name,g.occasion,g.date,g.location,g.code,g.created_at,${ownerSQL} AS ownerId,g.member_permission AS memberPermission,g.visibility,g.remove_at AS removeAt,(SELECT COUNT(*) FROM members WHERE group_id=g.id) AS memberCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id) AS itemCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id AND assignee IS NOT NULL) AS assignedCount FROM gatherings g JOIN members m ON g.id=m.group_id WHERE m.user_id=? ORDER BY g.created_at DESC`).bind(me.id).all()).results;
  if(!gid)return Response.json({me,groups},{headers:{'Cache-Control':'no-store'}});
@@ -181,6 +183,18 @@ export async function POST(r:Request){try{
    db.prepare('DELETE FROM members WHERE group_id=? AND user_id=?').bind(gid,me.id),
   ]);
   return Response.json({ok:true,home:true});
+ }else if(b.action==='removeMember'){
+  requireAdmin(group,me.id);
+  const userId=str(b.userId);
+  if(userId===me.id)throw new InputError('You can’t remove yourself. Delete the gathering instead.',400);
+  if(userId===group.owner_id)throw new InputError('The admin can’t be removed.',400);
+  const member=await db.prepare('SELECT user_id AS id,name FROM members WHERE group_id=? AND user_id=?').bind(gid,userId).first<{id:string;name:string}>();
+  if(!member)throw new InputError('That person is no longer in this gathering.',409);
+  await db.batch([
+   db.prepare('UPDATE items SET assignee=NULL,packed=0 WHERE group_id=? AND assignee=?').bind(gid,userId),
+   db.prepare('DELETE FROM item_packing WHERE user_id=? AND item_id IN (SELECT id FROM items WHERE group_id=?)').bind(userId,gid),
+   db.prepare('DELETE FROM members WHERE group_id=? AND user_id=?').bind(gid,userId),
+  ]);
  }else if(b.action==='deleteGroup'){
   requireAdmin(group,me.id);
   await db.prepare('DELETE FROM gatherings WHERE id=?').bind(gid).run();

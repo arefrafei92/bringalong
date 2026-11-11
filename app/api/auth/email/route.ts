@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { continueWithEmail, loginWithEmail, signupWithEmail } from "@/lib/accounts";
+import { mergeGuestSessionIntoAccount } from "@/lib/guest-merge";
 import { sessionCookie, signSession } from "@/lib/session";
 
 export async function POST(request: Request) {
@@ -10,7 +11,13 @@ export async function POST(request: Request) {
     if (request.headers.get("origin") && request.headers.get("origin") !== new URL(request.url).origin) {
       return Response.json({ error: "Invalid request origin." }, { status: 403 });
     }
-    const body = (await request.json()) as { action?: string; email?: string; password?: string; name?: string };
+    const body = (await request.json()) as {
+      action?: string;
+      email?: string;
+      password?: string;
+      name?: string;
+      guestToken?: string;
+    };
     const email = String(body.email || "");
     const password = String(body.password || "");
     const result =
@@ -23,6 +30,9 @@ export async function POST(request: Request) {
             : null;
     if (!result) return Response.json({ error: "Could not continue with email." }, { status: 400 });
     const { created, ...account } = result;
+
+    await mergeGuestSessionIntoAccount(request, env.SESSION_SECRET, account.id, body.guestToken);
+
     const secure = new URL(request.url).protocol === "https:";
     return Response.json(
       { ok: true, created, me: account },

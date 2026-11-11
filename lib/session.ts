@@ -5,6 +5,7 @@ export type SessionUser = {
   id: string;
   name: string;
   email: string;
+  guest?: boolean;
 };
 
 type SessionPayload = SessionUser & { exp: number };
@@ -84,7 +85,12 @@ export async function readSession(token: string, secret: string): Promise<Sessio
   const payload = await readSignedValue<SessionPayload>(token, secret);
   if (!payload?.id || !payload.email || !payload.name || !payload.exp) return null;
   if (payload.exp <= Math.floor(Date.now() / 1000)) return null;
-  return { id: payload.id, email: payload.email, name: payload.name };
+  return {
+    id: payload.id,
+    email: payload.email,
+    name: payload.name,
+    ...(payload.guest ? { guest: true } : {}),
+  };
 }
 
 export function sessionCookie(token: string, secure: boolean, maxAgeSeconds = 60 * 60 * 24 * 30): string {

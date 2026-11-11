@@ -39,6 +39,9 @@ export function validateEmail(value: string) {
   if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new Error("Enter a valid email address.");
   }
+  if (email.endsWith("@bringalong.guest")) {
+    throw new Error("Enter a real email address to save your account.");
+  }
   return email;
 }
 

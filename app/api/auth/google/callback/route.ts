@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { GOOGLE_SIGNIN_ENABLED } from "@/lib/auth-features";
+import { mergeGuestSessionIntoAccount } from "@/lib/guest-merge";
 import { clearOAuthCookie, finishGoogleLogin, safeReturnPath } from "@/lib/google-auth";
 import { accountForGoogle } from "@/lib/google-user";
 import { sessionCookie, signSession } from "@/lib/session";
@@ -22,6 +23,8 @@ export async function GET(request: Request) {
   try {
     const google = await finishGoogleLogin(request, env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.SESSION_SECRET);
     const account = await accountForGoogle(google);
+    // Guest cookie (if still present) is merged; localStorage token is handled on email continue.
+    await mergeGuestSessionIntoAccount(request, env.SESSION_SECRET, account.id);
     const headers = new Headers({
       Location: safeReturnPath(google.returnTo),
       "Cache-Control": "no-store",
