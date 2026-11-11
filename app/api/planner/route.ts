@@ -11,9 +11,14 @@ function memberLimitInput(v:unknown){
 class InputError extends Error { constructor(message:string,public status=400){super(message)} }
 function identity(r:Request){const id=r.headers.get('oai-authenticated-user-id');if(!id)throw new InputError('Please sign in to use your planner.',401);let name=r.headers.get('oai-authenticated-user-full-name')||r.headers.get('oai-authenticated-user-email')?.split('@')[0]||'You';if(r.headers.get('oai-authenticated-user-full-name-encoding')==='percent-encoded-utf-8')try{name=decodeURIComponent(name)}catch{}return {id,name};}
 function str(v:unknown,max=120){if(typeof v!=='string')throw new InputError('Please check the form.');return v.trim().slice(0,max)}
-const ownerSQL = "COALESCE(g.owner_id,(SELECT user_id FROM members WHERE group_id=g.id ORDER BY rowid LIMIT 1))";
+const ownerSQL = "CASE WHEN g.owner_id IS NOT NULL AND EXISTS(SELECT 1 FROM members m0 WHERE m0.group_id=g.id AND m0.user_id=g.owner_id) THEN g.owner_id ELSE (SELECT user_id FROM members WHERE group_id=g.id ORDER BY rowid LIMIT 1) END";
 async function membership(db:DB,gid:string,uid:string){if(!await db.prepare('SELECT 1 FROM members WHERE group_id=? AND user_id=?').bind(gid,uid).first())throw new InputError('This gathering is not available to you.',403)}
-async function access(db:DB,gid:string,uid:string){await membership(db,gid,uid);const group=await db.prepare(`SELECT g.id,${ownerSQL} AS owner_id,g.member_permission,g.visibility,g.password_hash,g.invite_password,g.remove_at,g.member_limit FROM gatherings g WHERE g.id=?`).bind(gid).first<GroupAccess>();if(!group)throw new InputError('Gathering not found.',404);return group;}
+async function repairOwner(db:DB,gid:string,ownerId:string|null|undefined){
+ if(!ownerId)return;
+ const stored=await db.prepare('SELECT owner_id AS ownerId FROM gatherings WHERE id=?').bind(gid).first<{ownerId:string|null}>();
+ if(stored&&stored.ownerId!==ownerId)await db.prepare('UPDATE gatherings SET owner_id=? WHERE id=?').bind(ownerId,gid).run();
+}
+async function access(db:DB,gid:string,uid:string){await membership(db,gid,uid);const group=await db.prepare(`SELECT g.id,${ownerSQL} AS owner_id,g.member_permission,g.visibility,g.password_hash,g.invite_password,g.remove_at,g.member_limit FROM gatherings g WHERE g.id=?`).bind(gid).first<GroupAccess>();if(!group)throw new InputError('Gathering not found.',404);await repairOwner(db,gid,group.owner_id);return group;}
 async function assertJoinRoom(db:DB,groupId:string,limit:number|null|undefined){
  if(limit==null)return;
  const row=await db.prepare('SELECT COUNT(*) AS count FROM members WHERE group_id=?').bind(groupId).first<{count:number}>();
@@ -89,6 +94,7 @@ export async function GET(r:Request){try{
  const me={...identityInfo,...(profile||{}),isGuest,email:isGuest?undefined:account?.email};
  // Never serialize password hashes. Invite password is only returned to the group owner.
  const groupRows=(await db.prepare(`SELECT g.id,g.name,g.occasion,g.date,g.location,g.code,g.created_at,${ownerSQL} AS ownerId,g.member_permission AS memberPermission,g.visibility,g.remove_at AS removeAt,g.member_limit AS memberLimit,g.invite_password AS invitePassword,(SELECT COUNT(*) FROM members WHERE group_id=g.id) AS memberCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id) AS itemCount,(SELECT COUNT(*) FROM items WHERE group_id=g.id AND assignee IS NOT NULL) AS assignedCount FROM gatherings g JOIN members m ON g.id=m.group_id WHERE m.user_id=? ORDER BY g.created_at DESC`).bind(me.id).all()).results as any[];
+ await Promise.all(groupRows.map((g:any)=>repairOwner(db,g.id,g.ownerId)));
  const groups=groupRows.map(g=>{const {invitePassword,...rest}=g;return {...rest,invitePassword:rest.ownerId===me.id&&rest.visibility==='protected'&&invitePassword?invitePassword:undefined}});
  if(!gid)return Response.json({me,groups},{headers:{'Cache-Control':'no-store'}});
  await membership(db,gid,me.id);

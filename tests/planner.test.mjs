@@ -106,6 +106,14 @@ test('password protection, hashing, rate limiting, and public access',async()=>{
  assert.equal((await post('publicguest',{action:'join',code})).status,200);
 });
 
+test('orphaned owner ids fall back to the first remaining member',async()=>{
+ const {data:{id:gid}}=await post('creator',{action:'create',name:'Orphaned owner',occasion:'Custom'});
+ sqlite.prepare('UPDATE gatherings SET owner_id=? WHERE id=?').run('missing-guest',gid);
+ const view=(await get('creator',gid)).data;
+ assert.equal(view.groups.find(g=>g.id===gid).ownerId,'creator');
+ assert.equal(sqlite.prepare('SELECT owner_id FROM gatherings WHERE id=?').get(gid).owner_id,'creator');
+});
+
 test('existing groups retain their original first member as admin',async()=>{
  sqlite.prepare('INSERT INTO gatherings (id,name,occasion,code,created_at) VALUES (?,?,?,?,?)').run('legacy','Legacy','Custom','LEGACY',1);
  sqlite.prepare('INSERT INTO members (group_id,user_id,name) VALUES (?,?,?)').run('legacy','first','First');
