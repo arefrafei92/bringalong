@@ -70,6 +70,13 @@ test('admin can reset assignee and packing while keeping the item',async()=>{
  assert.equal((await post('reset-owner',{action:'resetItem',groupId:gid,id})).status,200);
  const item=(await get('reset-owner',gid)).data.items.find(i=>i.id===id);
  assert.ok(item);assert.equal(item.name,'Cooler');assert.equal(item.assignee,null);assert.equal(item.packed,0);assert.deepEqual(item.packedBy,[]);
+ await post('reset-owner',{action:'saveItem',groupId:gid,id,name:'Cooler',quantity:1,unit:'each',category:'Equipment',assignee:'everyone'});
+ await post('reset-owner',{action:'saveItem',groupId:gid,name:'Tent',quantity:1,unit:'each',category:'Equipment',assignee:'reset-friend'});
+ assert.equal((await post('reset-friend',{action:'resetItems',groupId:gid})).status,403);
+ assert.equal((await post('reset-owner',{action:'resetItems',groupId:gid})).status,200);
+ const items=(await get('reset-owner',gid)).data.items;
+ assert.equal(items.length,2);
+ assert.ok(items.every(i=>i.assignee==null&&i.packed===0&&i.packedBy.length===0));
 });
 
 test('admin-only editing is enforced for all mutation paths',async()=>{
