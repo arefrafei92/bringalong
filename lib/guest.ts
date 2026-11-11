@@ -88,6 +88,7 @@ export async function mergeGuestIntoAccount(guestId: string, accountId: string):
     );
   }
   statements.push(db.prepare("DELETE FROM members WHERE user_id = ?").bind(guestId));
+  statements.push(db.prepare("UPDATE gatherings SET owner_id = ? WHERE owner_id = ?").bind(accountId, guestId));
   statements.push(db.prepare("UPDATE items SET assignee = ? WHERE assignee = ?").bind(accountId, guestId));
   statements.push(
     db
