@@ -43,6 +43,13 @@
       "when": 1794370000000,
       "tag": "0005_google_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794378000000,
+      "tag": "0006_member_limit",
+      "breakpoints": true
     }
   ]
 }
