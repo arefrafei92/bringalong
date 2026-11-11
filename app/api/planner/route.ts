@@ -146,6 +146,14 @@ export async function POST(r:Request){try{
   const id=str(b.id),assignee=await assignment(db,gid,b.assignee),old=await db.prepare('SELECT assignee FROM items WHERE id=? AND group_id=?').bind(id,gid).first<any>();if(!old)throw new InputError('This item was removed. Refresh your list.',409);
   if(old.assignee!==assignee)await db.batch([db.prepare('UPDATE items SET assignee=?,packed=0 WHERE id=? AND group_id=?').bind(assignee,id,gid),db.prepare('DELETE FROM item_packing WHERE item_id=?').bind(id)]);
  }else if(b.action==='deleteItem'){requireEditor(group,me.id);await db.prepare('DELETE FROM items WHERE id=? AND group_id=?').bind(str(b.id),gid).run();
+ }else if(b.action==='resetItem'){
+  requireAdmin(group,me.id);
+  const id=str(b.id),item=await db.prepare('SELECT id FROM items WHERE id=? AND group_id=?').bind(id,gid).first<{id:string}>();
+  if(!item)throw new InputError('This item was removed. Refresh your list.',409);
+  await db.batch([
+   db.prepare('UPDATE items SET assignee=NULL,packed=0 WHERE id=? AND group_id=?').bind(id,gid),
+   db.prepare('DELETE FROM item_packing WHERE item_id=?').bind(id),
+  ]);
  }else if(b.action==='packed'){
   const id=str(b.id),item=await db.prepare('SELECT assignee FROM items WHERE id=? AND group_id=?').bind(id,gid).first<{assignee:string|null}>();if(!item)throw new InputError('This item was removed. Refresh your list.',409);
   if(item.assignee==='everyone'){if(b.packed)await db.prepare('INSERT OR IGNORE INTO item_packing (item_id,user_id) VALUES (?,?)').bind(id,me.id).run();else await db.prepare('DELETE FROM item_packing WHERE item_id=? AND user_id=?').bind(id,me.id).run();}
